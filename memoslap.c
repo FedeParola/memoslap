@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -389,9 +390,9 @@ void fill_database() {
 // Run the benchamrk on a single thread.
 void *run_benchmark(void *t) {
     struct thread *thread = t;
-    int res, i;
-    struct client *clients;
-    struct pollfd *pfds;
+    int res, i, nfds, epollfd;
+    struct client *clients, *c;
+    struct epoll_event ev, *events;
     cpu_set_t cpuset;
 
     // Try to set affinity
@@ -401,8 +402,14 @@ void *run_benchmark(void *t) {
         perror("Unable to set thread affinity");
     }
 
+    epollfd = epoll_create1(0);
+    if (epollfd == -1) {
+        perror("Error creting epoll context");
+        exit(-1);
+    }
+
     clients = malloc(nclients * sizeof(struct client));
-    pfds = malloc(nclients * sizeof(struct pollfd));
+    events = malloc(nclients * sizeof(struct epoll_event));
     for (i = 0; i < nclients; i++) {
         clients[i].thread = thread;
         clients[i].id = i;
@@ -410,49 +417,76 @@ void *run_benchmark(void *t) {
         clients[i].seed = i;
         prepare_next_op(&clients[i]);
 
-        pfds[i].fd = clients[i].sockfd;
-        pfds[i].events = POLLOUT;
+        ev.events = EPOLLOUT;
+        ev.data.ptr = &clients[i];
+        if (epoll_ctl(epollfd, EPOLL_CTL_ADD, clients[i].sockfd, &ev) == -1) {
+            perror("Error setting poll event");
+            exit(-1);
+        }
     }
 
     while (!stop) {
-        res = poll(pfds, nclients, -1);
-        if(res == -1) {
+        nfds = epoll_wait(epollfd, events, nclients, -1);
+        if (nfds == -1) {
             perror("Error polling the sockets");
             exit(-1);
         }
-        if (res == 0) {
-            fprintf(stderr, "poll() woke up due to timeout, "
+        if (nfds == 0) {
+            fprintf(stderr, "epoll_wait() woke up due to timeout, "
                             "this should not happen\n");
             exit(-1);
         }
 
-        for (i = 0; i < nclients; i++) {
-            if (pfds[i].revents) {
-                if (pfds[i].revents & POLLIN) {
-                    res = handle_read(&clients[i]);
-                } else if (pfds[i].revents & POLLOUT) {
-                    res = handle_write(&clients[i]);
-                } else {
-                    fprintf(stderr, "Poll woke up due to %04x on client %d\n",
-                            pfds[i].revents, i);
-                    exit(-1);
-                }
-
-                pfds[i].fd = clients[i].sockfd;
-
+        for (i = 0; i < nfds; i++) {
+            c = events[i].data.ptr;
+            if (events[i].events & EPOLLIN) {
+                res = handle_read(events[i].data.ptr);
                 switch (res) {
                 case RET_NEED_READ:
-                    pfds[i].events = POLLIN;
+                    // Keep the same event
                     break;
 
                 case RET_NEED_WRITE:
-                    pfds[i].events = POLLOUT;
+                    ev.events = EPOLLOUT;
+                    ev.data.ptr = events[i].data.ptr;
+                    if (epoll_ctl(epollfd, EPOLL_CTL_MOD, c->sockfd, &ev)
+                            == -1) {
+                        perror("Error setting poll event");
+                        exit(-1);
+                    }
                     break;
 
                 default:
                     fprintf(stderr, "Unknown handler return code\n");
                     exit(-1);
                 }
+
+            } else if (events[i].events & EPOLLOUT) {
+                res = handle_write(events[i].data.ptr);
+                switch (res) {
+                case RET_NEED_READ:
+                    ev.events = EPOLLIN;
+                    ev.data.ptr = events[i].data.ptr;
+                    if (epoll_ctl(epollfd, EPOLL_CTL_MOD, c->sockfd, &ev)
+                            == -1) {
+                        perror("Error setting poll event");
+                        exit(-1);
+                    }
+                    break;
+
+                case RET_NEED_WRITE:
+                    // Keep the same event
+                    break;
+
+                default:
+                    fprintf(stderr, "Unknown handler return code\n");
+                    exit(-1);
+                }
+
+            } else {
+                fprintf(stderr, "Epoll woke up due to %04x on client %d\n",
+                        events[i].events, i);
+                exit(-1);
             }
         }
     }
@@ -461,7 +495,7 @@ void *run_benchmark(void *t) {
         close(clients[i].sockfd);
     }
 
-    free(pfds);
+    free(events);
     free(clients);
 
     return NULL;

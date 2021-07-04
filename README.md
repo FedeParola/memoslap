@@ -1,4 +1,6 @@
 # memoslap
+In this branch I tried to use the [epoll](https://man7.org/linux/man-pages/man7/epoll.7.html) I/O event notification facility instead of [poll](https://man7.org/linux/man-pages/man2/poll.2.html), however performance is worse.
+___
 **memoslap** is a load benchmark for memcached servers, slightly faster but with many less features than the [**memaslap**](http://docs.libmemcached.org/bin/memaslap.html) benchmark included in libmemcached.
 
 ## Features
