@@ -20,6 +20,7 @@
 #define OP_LIST_SIZE 10
 #define CACHE_LINE_SIZE 64
 #define MAX_THREADS 8
+#define FIRST_PORT 5000
 
 enum operation {
     OP_GET,
@@ -61,6 +62,7 @@ static unsigned nclients    = 128;
 static unsigned nthreads    = 1;
 static unsigned runtime     = 10;
 static char no_fill         = 0;
+static char consec_ports    = 0;
 
 // The sequence of operations each client should perform
 enum operation op_list[OP_LIST_SIZE];
@@ -73,13 +75,14 @@ const char *argp_program_bug_address = "<federico.parola@polito.it>";
 static char doc[] = "memoslap -- load benchmark for memcached servers";
 static char args_doc[] = "SERVER PORT";
 static struct argp_option options[] = {
-    {"clients",     'c', "NUM",      0, "Number of concurrent clients for every thread (default 128)"},
-    {"get-share",   'g', "FRACTION", 0, "Share of get operations (default 0.9)"},
-    {"keys",        'k', "NUM",      0, "Number of distinct keys to use (default 65536)"},
-    {"threads",     't', "NUM",      0, "Number of threads (default 1)"},
-    {"runtime",     'r', "SECS",     0, "Run time of the benchmark in seconds (default 10)"},
-    {"op-per-conn", 'o', "NUM",      0, "Operations to execute for every TCP connection (default 0 = all operations in one connection)"},
-    {"no-fill",     'n', 0,          0, "Do not fill the database before starting the benchmark"},
+    {"clients",      'c', "NUM",      0, "Number of concurrent clients for every thread (default 128)"},
+    {"get-share",    'g', "FRACTION", 0, "Share of get operations (default 0.9)"},
+    {"keys",         'k', "NUM",      0, "Number of distinct keys to use (default 65536)"},
+    {"threads",      't', "NUM",      0, "Number of threads (default 1)"},
+    {"runtime",      'r', "SECS",     0, "Run time of the benchmark in seconds (default 10)"},
+    {"op-per-conn",  'o', "NUM",      0, "Operations to execute for every TCP connection (default 0 = all operations in one connection)"},
+    {"no-fill",      'n', 0,          0, "Do not fill the database before starting the benchmark"},
+    {"consec-ports", 'p', 0,          0, "Use consecutive src ports, starting from 5000"},
     { 0 }
 };
 
@@ -110,6 +113,9 @@ parse_opt(int key, char *arg, struct argp_state *state) {
         break;
     case 'n':
         no_fill = 1;
+        break;
+    case 'p':
+        consec_ports = 1;
         break;
     case ARGP_KEY_ARG:
         switch (state->arg_num) {
@@ -157,6 +163,27 @@ void prepare_next_op(struct client *c) {
              == -1) {
             perror("Socket creation failed");
             exit(-1);
+        }
+
+        if (consec_ports) {
+            struct sockaddr_in src_addr = {0};
+            src_addr.sin_family = AF_INET;
+            src_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+            src_addr.sin_port =
+                    htons(FIRST_PORT + c->thread->id * nclients + c->id);
+
+            int v = 1;
+            if (setsockopt(c->sockfd, SOL_SOCKET, SO_REUSEADDR, &v,
+                    sizeof(v))) {
+                fprintf(stderr, "Unable to set SO_REUSEADDR sockopt\n");
+                exit(-1);
+            }
+
+            if (bind(c->sockfd, &src_addr, sizeof(src_addr))) {
+                fprintf(stderr, "Unable to bind socket to src port %d: %s\n",
+                        ntohs(src_addr.sin_port), strerror(errno));
+                exit(-1);
+            }
         }
 
         int res = connect(c->sockfd, (struct sockaddr *)&server_addr,

@@ -18,6 +18,7 @@ memoslap -- load benchmark for memcached servers
                              benchmark
   -o, --op-per-conn=NUM      Operations to execute for every TCP connection
                              (default 0 = all operations in one connection)
+  -p, --consec-ports         Use consecutive src ports, starting from 5000
   -r, --runtime=SECS         Run time of the benchmark in seconds (default 10)
   -t, --threads=NUM          Number of threads (default 1)
   -?, --help                 Give this help list
